@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Gap } from '@/types';
 import { GripVertical, AlertTriangle, Clock, Flag } from 'lucide-react';
 import { clsx } from 'clsx';
@@ -16,45 +16,99 @@ interface GapPriorityManagerProps {
 }
 
 export function GapPriorityManager({ gaps, onPriorityChange, onReorder }: GapPriorityManagerProps) {
-  // Use gaps directly from props - no internal state needed
-  const gapPriorities = gaps.map((gap, index) => ({
-    ...gap,
-    priority: gap.priority || (index + 1),
-  })).sort((a, b) => (a.priority || 0) - (b.priority || 0));
+  // Use local state to manage immediate visual updates during drag operations
+  const [localGaps, setLocalGaps] = useState<GapWithPriority[]>(() =>
+    gaps.map((gap, index) => ({
+      ...gap,
+      priority: gap.priority || (index + 1),
+    })).sort((a, b) => (a.priority || 0) - (b.priority || 0))
+  );
 
   const [draggedItem, setDraggedItem] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  // Update local state when gaps prop changes
+  useEffect(() => {
+    setLocalGaps(gaps.map((gap, index) => ({
+      ...gap,
+      priority: gap.priority || (index + 1),
+    })).sort((a, b) => (a.priority || 0) - (b.priority || 0)));
+  }, [gaps]);
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedItem(index);
+    setDragOverIndex(null);
     e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', index.toString());
   };
 
   const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
 
     if (draggedItem === null || draggedItem === index) return;
 
-    const newGaps = [...gapPriorities];
+    // Only update if we're hovering over a different index
+    setDragOverIndex(index);
+  };
+
+  const handleDragEnter = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedItem !== null && draggedItem !== index) {
+      setDragOverIndex(index);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    // Only clear if we're actually leaving the container
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOverIndex(null);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (draggedItem === null || draggedItem === index) {
+      // Clear drag state even if no reorder needed
+      setDraggedItem(null);
+      setDragOverIndex(null);
+      return;
+    }
+
+    const newGaps = [...localGaps];
     const draggedGap = newGaps[draggedItem];
 
     // Remove dragged item and insert at new position
     newGaps.splice(draggedItem, 1);
     newGaps.splice(index, 0, draggedGap);
 
-    // Update priorities and notify parent immediately
+    // Update priorities for immediate visual feedback
     const updatedGaps = newGaps.map((gap, i) => ({
       ...gap,
       priority: i + 1,
     }));
 
-    if (onReorder) {
-      onReorder(updatedGaps);
-    }
-    setDraggedItem(index);
+    // Clear drag state IMMEDIATELY to restore normal appearance
+    setDraggedItem(null);
+    setDragOverIndex(null);
+
+    // Update local state after clearing drag state
+    setLocalGaps(updatedGaps);
+
+    // Notify parent for backend sync after drag is complete
+    setTimeout(() => {
+      if (onReorder) {
+        onReorder(updatedGaps);
+      }
+    }, 0);
   };
 
   const handleDragEnd = () => {
     setDraggedItem(null);
+    setDragOverIndex(null);
   };
 
   const getPriorityColor = (priority: number, severity: string) => {
@@ -87,11 +141,11 @@ export function GapPriorityManager({ gaps, onPriorityChange, onReorder }: GapPri
           </p>
         </div>
         <div className="text-sm text-gray-500">
-          {gapPriorities.length} gaps to prioritize
+          {localGaps.length} gaps to prioritize
         </div>
       </div>
 
-      {gapPriorities.length === 0 ? (
+      {localGaps.length === 0 ? (
         <div className="text-center py-12 bg-green-50 rounded-lg">
           <div className="text-green-600 text-2xl mb-2">✅</div>
           <h3 className="text-lg font-medium text-gray-900 mb-1">
@@ -103,17 +157,21 @@ export function GapPriorityManager({ gaps, onPriorityChange, onReorder }: GapPri
         </div>
       ) : (
         <div className="space-y-3">
-          {gapPriorities.map((gap, index) => (
+          {localGaps.map((gap, index) => (
             <div
               key={`${gap.decision_id}-${index}`}
               draggable
               onDragStart={(e) => handleDragStart(e, index)}
               onDragOver={(e) => handleDragOver(e, index)}
+              onDragEnter={(e) => handleDragEnter(e, index)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, index)}
               onDragEnd={handleDragEnd}
               className={clsx(
                 'flex items-start gap-4 p-4 rounded-lg border-2 transition-all cursor-move',
                 getPriorityColor(index + 1, gap.severity),
                 draggedItem === index && 'opacity-50 scale-95',
+                dragOverIndex === index && draggedItem !== index && 'border-blue-400 bg-blue-50',
                 'hover:shadow-md'
               )}
             >

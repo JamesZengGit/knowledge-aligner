@@ -1,19 +1,30 @@
 version: '3.8'
 
 services:
+  # Redis - Tier 1 live context buffer
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # Database
   postgres:
-    image: pgvector/pgvector:pg16
+    build:
+      context: ./database
+      dockerfile: Dockerfile
     environment:
-      POSTGRES_DB: slack_digest
+      POSTGRES_DB: knowledge_aligner
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
-      - ./init.sql:/docker-entrypoint-initdb.d/00-init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -28,7 +39,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:password@postgres:5432/slack_digest
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/knowledge_aligner
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - API_HOST=0.0.0.0
       - API_PORT=8000

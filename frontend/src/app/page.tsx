@@ -69,12 +69,10 @@ export default function Home() {
     setLoading(false);
   };
 
-  const handleGapPriorityChange = async (gapId: number, priority: number) => {
-    console.log(`Gap ${gapId} priority changed to ${priority}`);
-
+  const handleGapPriorityChange = async (gapId: string | number, priority: number) => {
     // Update backend with new priority
     try {
-      await fetch(`/api/gaps/priority/${gapId}?priority=${priority}`, {
+      await fetch(`/api/gaps/priority/${gapId}?priority=${priority}&user_id=${currentAccount}`, {
         method: 'POST',
       });
     } catch (error) {
@@ -84,7 +82,7 @@ export default function Home() {
     // Update gap priorities in state
     setGaps(prevGaps =>
       prevGaps.map(gap =>
-        gap.decision_id === gapId
+        (gap.decision_id === gapId || (gap as any).gap_id === gapId)
           ? { ...gap, priority }
           : gap
       ).sort((a, b) => (a.priority || 0) - (b.priority || 0))
@@ -93,11 +91,12 @@ export default function Home() {
 
   const handleGapReorder = async (reorderedGaps: Gap[]) => {
     setGaps(reorderedGaps);
-    // Update priorities based on new order
+    // Update priorities based on new order — use gap_id when decision_id is absent
     for (let index = 0; index < reorderedGaps.length; index++) {
       const gap = reorderedGaps[index];
-      if (gap.decision_id) {
-        await handleGapPriorityChange(gap.decision_id, index + 1);
+      const identifier = gap.decision_id ?? (gap as any).gap_id;
+      if (identifier) {
+        await handleGapPriorityChange(identifier, index + 1);
       }
     }
   };

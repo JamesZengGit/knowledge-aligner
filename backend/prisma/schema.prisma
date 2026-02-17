@@ -1,0 +1,220 @@
+// Knowledge Aligner - Production Prisma Schema
+// Hardware team decision tracking with AI-powered knowledge management
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Users and roles in the hardware team
+model User {
+  id               String   @id @default(cuid())
+  userId           String   @unique @map("user_id")
+  userName         String   @map("user_name")
+  email            String   @unique
+  role             String
+  ownedComponents  String   @map("owned_components") // JSON string for SQLite
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  authoredDecisions Decision[] @relation("DecisionAuthor")
+  gapAssignments    Gap[]      @relation("GapAssignee")
+  chatMessages      ChatMessage[]
+
+  @@map("users")
+}
+
+// Core decision tracking
+model Decision {
+  id                 Int              @id @default(autoincrement())
+  decisionId         String           @unique @map("decision_id")
+  threadId           String           @map("thread_id")
+  timestamp          DateTime
+  authorUserId       String           @map("author_user_id")
+  authorName         String           @map("author_name")
+  authorRole         String           @map("author_role")
+  decisionType       DecisionType     @map("decision_type")
+  decisionText       String           @map("decision_text")
+  affectedComponents String           @map("affected_components") // JSON string for SQLite
+  referencedReqs     String           @map("referenced_reqs") // JSON string for SQLite
+  similarityScore    Float?           @map("similarity_score")
+
+  // AI/ML fields
+  embeddingStatus    EmbeddingStatus @default(PENDING) @map("embedding_status")
+
+  // Change tracking
+  beforeState        Json?            @map("before_state")
+  afterState         Json?            @map("after_state")
+
+  // Relations
+  author            User                      @relation("DecisionAuthor", fields: [authorUserId], references: [userId])
+  relationships     DecisionRelationship[]    @relation("SourceDecision")
+  relatedTo         DecisionRelationship[]    @relation("TargetDecision")
+  gaps              Gap[]
+  slackMessages     SlackMessage[]
+
+  @@map("decisions")
+}
+
+// Decision types
+enum DecisionType {
+  REQUIREMENT_CHANGE @map("requirement_change")
+  DESIGN_DECISION    @map("design_decision")
+  APPROVAL           @map("approval")
+
+  @@map("decision_type")
+}
+
+// Embedding processing status
+enum EmbeddingStatus {
+  PENDING    @map("pending")
+  PROCESSING @map("processing")
+  EMBEDDED   @map("embedded")
+  FAILED     @map("failed")
+
+  @@map("embedding_status")
+}
+
+// Relationships between decisions
+model DecisionRelationship {
+  id               Int               @id @default(autoincrement())
+  sourceId         Int               @map("source_id")
+  targetId         Int               @map("target_id")
+  relationshipType RelationshipType  @map("relationship_type")
+  confidence       Float             @default(0.0)
+  createdAt        DateTime          @default(now()) @map("created_at")
+
+  // Relations
+  sourceDecision   Decision          @relation("SourceDecision", fields: [sourceId], references: [id])
+  targetDecision   Decision          @relation("TargetDecision", fields: [targetId], references: [id])
+
+  @@unique([sourceId, targetId, relationshipType])
+  @@map("decision_relationships")
+}
+
+enum RelationshipType {
+  IMPACTS        @map("impacts")
+  REFERENCES     @map("references")
+  CONFLICTS_WITH @map("conflicts_with")
+  DEPENDS_ON     @map("depends_on")
+
+  @@map("relationship_type")
+}
+
+// Gap detection and priority management
+model Gap {
+  id           Int         @id @default(autoincrement())
+  type         GapType
+  severity     GapSeverity
+  description  String
+  decisionId   Int?        @map("decision_id")
+  assigneeId   String?     @map("assignee_id")
+  priority     Int         @default(5) // 1 = highest priority
+  status       GapStatus   @default(OPEN)
+  recommendation String
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+  resolvedAt   DateTime?   @map("resolved_at")
+
+  // Relations
+  decision     Decision?   @relation(fields: [decisionId], references: [id])
+  assignee     User?       @relation("GapAssignee", fields: [assigneeId], references: [userId])
+
+  @@map("gaps")
+}
+
+enum GapType {
+  MISSING_STAKEHOLDER @map("missing_stakeholder")
+  CONFLICT            @map("conflict")
+  BROKEN_DEPENDENCY   @map("broken_dependency")
+
+  @@map("gap_type")
+}
+
+enum GapSeverity {
+  CRITICAL @map("critical")
+  WARNING  @map("warning")
+  INFO     @map("info")
+
+  @@map("gap_severity")
+}
+
+enum GapStatus {
+  OPEN        @map("open")
+  IN_PROGRESS @map("in_progress")
+  RESOLVED    @map("resolved")
+  DISMISSED   @map("dismissed")
+
+  @@map("gap_status")
+}
+
+// Slack message ingestion
+model SlackMessage {
+  id          String    @id @default(cuid())
+  messageId   String    @unique @map("message_id")
+  channelId   String    @map("channel_id")
+  threadId    String?   @map("thread_id")
+  userId      String    @map("user_id")
+  messageText String    @map("message_text")
+  timestamp   DateTime
+  processed   Boolean   @default(false)
+  decisionId  Int?      @map("decision_id")
+
+  // Relations
+  decision    Decision? @relation(fields: [decisionId], references: [id])
+
+  @@map("slack_messages")
+}
+
+// AI Chat integration
+model ChatMessage {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  message      String
+  response     String?
+  contextData  Json?    @map("context_data") // Store decisions, gaps used for context
+  timestamp    DateTime @default(now())
+
+  // Relations
+  user         User     @relation(fields: [userId], references: [userId])
+
+  @@map("chat_messages")
+}
+
+// System configuration and preferences
+model SystemConfig {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       Json
+  description String?
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("system_config")
+}
+
+// Performance and analytics
+model SearchMetrics {
+  id               String   @id @default(cuid())
+  userId           String   @map("user_id")
+  query            String
+  resultCount      Int      @map("result_count")
+  responseTimeMs   Float    @map("response_time_ms")
+  queryType        String   @map("query_type")
+  timestamp        DateTime @default(now())
+
+  @@map("search_metrics")
+}
+
+// Performance analytics (simplified for SQLite)
+model ComponentIndex {
+  id        String   @id @default(cuid())
+  component String   @unique
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("component_index")
+}
