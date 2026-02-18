@@ -464,11 +464,69 @@ async def get_gaps(user_id: str = "alice"):
                     ORDER BY COALESCE(gp.priority, g.decision_id % 3 + 1) ASC
                 """, user_id)
                 if rows:
-                    return [dict(r) for r in rows]
+                    # Attach gap_details to each gap
+                    gap_ids = [r["gap_id"] for r in rows]
+                    detail_rows = await conn.fetch("""
+                        SELECT gap_id, detail_id, detail_type, detail, created_at
+                        FROM gap_details
+                        WHERE gap_id = ANY($1::varchar[])
+                        ORDER BY gap_id, detail_type, detail_id
+                    """, gap_ids)
+
+                    # Group details by gap_id
+                    details_by_gap: Dict[str, list] = {}
+                    for dr in detail_rows:
+                        gid = dr["gap_id"]
+                        details_by_gap.setdefault(gid, []).append({
+                            "detail_id": dr["detail_id"],
+                            "detail_type": dr["detail_type"],
+                            "detail": json.loads(dr["detail"]) if isinstance(dr["detail"], str) else dr["detail"],
+                            "created_at": dr["created_at"].isoformat(),
+                        })
+
+                    result = []
+                    for r in rows:
+                        gap = dict(r)
+                        gap["details"] = details_by_gap.get(gap["gap_id"], [])
+                        result.append(gap)
+                    return result
         except Exception as e:
             logger.warning(f"PostgreSQL gaps query failed, using mock: {e}")
 
     return MOCK_GAPS.get(user_id, [])
+
+@app.get("/api/gaps/{gap_id}/details")
+async def get_gap_details(gap_id: str):
+    """Return all detail rows for a single gap, including resolved relationships."""
+    orch: Optional[TwoTierOrchestrator] = app.state.orchestrator
+    if not (orch and orch.db_pool):
+        raise HTTPException(503, "Database not available")
+    async with orch.db_pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT detail_id, detail_type, detail, created_at
+            FROM gap_details WHERE gap_id = $1
+            ORDER BY detail_type, detail_id
+        """, gap_id)
+        details = []
+        for r in rows:
+            d = {
+                "detail_id": r["detail_id"],
+                "detail_type": r["detail_type"],
+                "detail": json.loads(r["detail"]) if isinstance(r["detail"], str) else r["detail"],
+                "created_at": r["created_at"].isoformat(),
+            }
+            # For relationship rows, resolve the target gap inline
+            if r["detail_type"] == "relationship":
+                target_id = d["detail"].get("target_gap_id")
+                if target_id:
+                    tgt = await conn.fetchrow(
+                        "SELECT gap_id, type, severity, description FROM gaps WHERE gap_id=$1",
+                        target_id
+                    )
+                    d["detail"]["target_gap"] = dict(tgt) if tgt else None
+            details.append(d)
+    return details
+
 
 @app.post("/api/gaps/priority/{gap_id}")
 async def update_gap_priority(

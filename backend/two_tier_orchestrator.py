@@ -241,29 +241,44 @@ class TwoTierOrchestrator:
             return None
 
         try:
-            # Generate decision ID with timestamp
-            decision_id = f"{timestamp.strftime('%Y%m%d_%H%M%S')}_{message_id[:8]}"
-
             async with self.db_pool.acquire() as conn:
-                # Create decision record
-                await conn.execute("""
+                # Look up author name/role from user_profiles
+                user_row = await conn.fetchrow(
+                    "SELECT user_name, role FROM user_profiles WHERE user_id=$1", user_id
+                )
+                author_name = user_row["user_name"] if user_row else user_id
+                author_role = user_row["role"] if user_row else None
+
+                # Infer decision_type from extracted entities
+                if entities.reqs:
+                    decision_type = "requirement_change"
+                else:
+                    decision_type = "technical_decision"
+
+                # INSERT without decision_id — let SERIAL generate it
+                # Use RETURNING to get the auto-generated integer id
+                # Pass lists directly — asyncpg maps Python list → TEXT[]
+                pg_id = await conn.fetchval("""
                     INSERT INTO decisions (
-                        decision_id, thread_id, timestamp, author_user_id,
-                        decision_text, affected_components, referenced_reqs,
+                        thread_id, timestamp, author_user_id, author_name, author_role,
+                        decision_type, decision_text, affected_components, referenced_reqs,
                         embedding_status
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+                    RETURNING decision_id
                 """,
-                    decision_id,
-                    f"{channel_id}_{message_id}",  # thread_id
+                    f"{channel_id}_{message_id}",
                     timestamp,
                     user_id,
+                    author_name,
+                    author_role,
+                    decision_type,
                     message_text,
-                    json.dumps(entities.components),
-                    json.dumps(entities.reqs)
+                    entities.components,   # list → TEXT[]
+                    entities.reqs,         # list → TEXT[]
                 )
 
-                logger.info(f"📝 Created decision record {decision_id}")
-                return decision_id
+                logger.info(f"📝 Created decision record id={pg_id} for user={user_id}")
+                return str(pg_id)
 
         except Exception as e:
             logger.error(f"Failed to create decision record: {e}")
@@ -412,7 +427,60 @@ class TwoTierOrchestrator:
                     f"Include {user_id} in future discussions about overlapping components"
                 )
 
-                logger.info(f"⚠️  Created gap {gap_id} for missing stakeholder {user_id}")
+                # Write gap_details rows
+                # 1. context — why this gap was detected
+                overlapping_components = list({
+                    c for ctx in matching_contexts
+                    for c in ctx['message'].entities.get('components', [])
+                    if c in b_entities.components
+                })
+                overlapping_reqs = list({
+                    r for ctx in matching_contexts
+                    for r in ctx['message'].entities.get('reqs', [])
+                    if r in b_entities.reqs
+                })
+                await conn.execute("""
+                    INSERT INTO gap_details (gap_id, detail_type, detail)
+                    VALUES ($1, 'context', $2)
+                """, gap_id, json.dumps({
+                    "source": "orchestrator",
+                    "overlapping_components": overlapping_components,
+                    "overlapping_reqs": overlapping_reqs,
+                    "matching_message_count": len(matching_contexts),
+                }))
+
+                # 2. stakeholder — the user who should have been included
+                await conn.execute("""
+                    INSERT INTO gap_details (gap_id, detail_type, detail)
+                    VALUES ($1, 'stakeholder', $2)
+                """, gap_id, json.dumps({
+                    "user_id": user_id,
+                    "role": "notified",
+                }))
+
+                # 3. relationships — link to other gaps that share overlapping components
+                if overlapping_components:
+                    related = await conn.fetch("""
+                        SELECT DISTINCT g.gap_id FROM gaps g
+                        JOIN gap_details gd ON gd.gap_id = g.gap_id
+                        WHERE gd.detail_type = 'context'
+                          AND gd.detail->'overlapping_components' ?| $1::text[]
+                          AND g.gap_id != $2
+                        LIMIT 5
+                    """, overlapping_components, gap_id)
+
+                    for row in related:
+                        target_gap_id = row["gap_id"]
+                        await conn.execute("""
+                            INSERT INTO gap_details (gap_id, detail_type, detail)
+                            VALUES ($1, 'relationship', $2)
+                        """, gap_id, json.dumps({
+                            "target_gap_id": target_gap_id,
+                            "relationship_type": "related_to",
+                        }))
+
+                logger.info(f"⚠️  Created gap {gap_id} for missing stakeholder {user_id} "
+                            f"(components={overlapping_components})")
                 return gap_id
 
         except Exception as e:

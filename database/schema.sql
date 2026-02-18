@@ -162,6 +162,27 @@ CREATE TABLE gap_priority (
     PRIMARY KEY (gap_id, user_id)
 );
 
+-- Gap details: extensible detail rows for each gap (parent-detail pattern)
+-- detail_type controls the shape of the detail JSON:
+--   'relationship' : {"target_gap_id": "g248", "relationship_type": "blocks|related_to|caused_by|duplicates"}
+--   'context'      : {"source": "orchestrator|user", "text": "..."}
+--   'stakeholder'  : {"user_id": "bob", "role": "reviewer|owner|notified"}
+--   'recommendation': {"action": "...", "priority": "high|medium|low"}
+CREATE TABLE gap_details (
+    detail_id    SERIAL PRIMARY KEY,
+    gap_id       VARCHAR(50)  NOT NULL REFERENCES gaps(gap_id) ON DELETE CASCADE,
+    detail_type  VARCHAR(50)  NOT NULL
+                 CHECK (detail_type IN ('relationship', 'context', 'stakeholder', 'recommendation')),
+    detail       JSONB        NOT NULL,
+    created_at   TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_gap_details_gap_id ON gap_details (gap_id);
+CREATE INDEX idx_gap_details_type   ON gap_details (detail_type);
+-- Index into JSONB for fast relationship lookups (find all gaps targeting a given gap)
+CREATE INDEX idx_gap_details_target ON gap_details USING GIN (detail)
+    WHERE detail_type = 'relationship';
+
 CREATE INDEX idx_gaps_assignee ON gaps (assignee_id);
 CREATE INDEX idx_gaps_decision ON gaps (decision_id);
 CREATE INDEX idx_gaps_type ON gaps (type);
